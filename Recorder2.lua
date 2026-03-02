@@ -1,11 +1,10 @@
 -- =====================================================================
--- FYY RECORDER | AUTO WALK (ULTIMATE 60FPS + BYARUL SMOOTHING ENGINE)
--- UI Design: Dashboard + Floating Mini Buttons (Anti Bug)
+-- FYY RECORDER | AUTO WALK (100% PURE BYARUL PHYSICS - NO LERP/NO GLIDE)
+-- UI Design: Dashboard + Floating Mini Buttons 
 -- =====================================================================
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local TweenService = game:GetService("TweenService")
 local player = Players.LocalPlayer
 
 -- ========= ENGINE CONFIGURATION =========
@@ -13,7 +12,8 @@ local RECORDING_FPS = 60
 local VELOCITY_SCALE = 1
 local VELOCITY_Y_SCALE = 1
 local JUMP_VELOCITY_THRESHOLD = 10
-local STATE_CHANGE_COOLDOWN = 0.08 -- Anti Spam Animasi
+local PLAYBACK_FIXED_TIMESTEP = 1 / 60
+local STATE_CHANGE_COOLDOWN = 0.08 
 
 local IsRecording, IsPlaying, AutoLoop = false, false, false
 local CurrentSpeed = 1.0
@@ -31,53 +31,96 @@ local function SafeCall(func, ...)
     return success
 end
 
--- ========= ADVANCED PHYSICS LOGIC =========
+-- ========= PURE BYARUL PHYSICS LOGIC =========
 local function GetCurrentMoveState(hum)
     if not hum then return "Grounded" end
     local state = hum:GetState()
     if state == Enum.HumanoidStateType.Climbing then return "Climbing"
     elseif state == Enum.HumanoidStateType.Jumping then return "Jumping"
     elseif state == Enum.HumanoidStateType.Freefall then return "Falling"
+    elseif state == Enum.HumanoidStateType.Running or state == Enum.HumanoidStateType.RunningNoPhysics then return "Grounded"
     elseif state == Enum.HumanoidStateType.Swimming then return "Swimming"
     else return "Grounded" end
 end
 
 local function GetFrameVelocity(frame, moveState)
     if not frame or not frame.Velocity then return Vector3.zero end
-    local velY = frame.Velocity[2] * VELOCITY_Y_SCALE
-    if moveState == "Grounded" or moveState == nil then velY = 0 end 
-    return Vector3.new(frame.Velocity[1] * VELOCITY_SCALE, velY, frame.Velocity[3] * VELOCITY_SCALE)
+    local velocityX = frame.Velocity[1] * VELOCITY_SCALE
+    local velocityY = frame.Velocity[2] * VELOCITY_Y_SCALE
+    local velocityZ = frame.Velocity[3] * VELOCITY_SCALE
+    
+    if moveState == "Grounded" or moveState == nil then
+        velocityY = 0 
+    end
+    
+    return Vector3.new(velocityX, velocityY, velocityZ)
 end
 
--- [RAHASIA 1: FRAME SMOOTHING (Nyetrika Rute Patah-Patah)]
-local function SmoothFrames(frames)
-    if #frames < 6 then return frames end
-    local smoothed = {}
-    for i = 1, #frames do
-        if i <= 1 or i >= #frames then
-            table.insert(smoothed, frames[i])
-        else
-            local prev = frames[i-1]
-            local curr = frames[i]
-            local nxt = frames[i+1]
-            
-            -- Rata-rata 3 titik koordinat buat ngebunuh getaran mikrosekon
-            local px = (prev.Position[1] + curr.Position[1] + nxt.Position[1]) / 3
-            local py = (prev.Position[2] + curr.Position[2] + nxt.Position[2]) / 3
-            local pz = (prev.Position[3] + curr.Position[3] + nxt.Position[3]) / 3
-            
-            table.insert(smoothed, {
-                Position = {px, py, pz},
-                LookVector = curr.LookVector,
-                UpVector = curr.UpVector,
-                Velocity = curr.Velocity,
-                MoveState = curr.MoveState,
-                WalkSpeed = curr.WalkSpeed,
-                Timestamp = curr.Timestamp
-            })
+-- 100% COPY DARI BYARUL - TANPA LERP ANEH-ANEH
+local function ApplyFrameDirect(frame)
+    SafeCall(function()
+        local char = player.Character
+        if not char or not char:FindFirstChild("HumanoidRootPart") then return end
+        
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        
+        if not hrp or not hum then return end
+        
+        -- Apply CFrame presisi dengan UpVector
+        local pos = Vector3.new(frame.Position[1], frame.Position[2], frame.Position[3])
+        local look = Vector3.new(frame.LookVector[1], frame.LookVector[2], frame.LookVector[3])
+        local up = Vector3.new(frame.UpVector[1], frame.UpVector[2], frame.UpVector[3])
+        hrp.CFrame = CFrame.lookAt(pos, pos + look, up)
+        
+        -- Apply Velocity Smart
+        hrp.AssemblyLinearVelocity = GetFrameVelocity(frame, frame.MoveState)
+        hrp.AssemblyAngularVelocity = Vector3.zero
+        
+        local frameWalkSpeed = (frame.WalkSpeed or 16) * CurrentSpeed
+        hum.WalkSpeed = frameWalkSpeed
+        hum.AutoRotate = false -- MATIIN ROTASI
+        
+        local moveState = frame.MoveState
+        local frameVelocity = GetFrameVelocity(frame, frame.MoveState)
+        local currentTime = tick()
+        
+        local isJumpingByVelocity = frameVelocity.Y > JUMP_VELOCITY_THRESHOLD
+        local isFallingByVelocity = frameVelocity.Y < -5
+        
+        if isJumpingByVelocity and moveState ~= "Jumping" then
+            moveState = "Jumping"
+        elseif isFallingByVelocity and moveState ~= "Falling" then
+            moveState = "Falling"
         end
-    end
-    return smoothed
+        
+        if moveState == "Jumping" then
+            if lastPlaybackState ~= "Jumping" then
+                hum:ChangeState(Enum.HumanoidStateType.Jumping)
+                lastPlaybackState = "Jumping"
+                lastStateChangeTime = currentTime
+            end
+        elseif moveState == "Falling" then
+            if lastPlaybackState ~= "Falling" then
+                hum:ChangeState(Enum.HumanoidStateType.Freefall)
+                lastPlaybackState = "Falling"
+                lastStateChangeTime = currentTime
+            end
+        else
+            if moveState ~= lastPlaybackState and (currentTime - lastStateChangeTime) >= STATE_CHANGE_COOLDOWN then
+                if moveState == "Climbing" then
+                    hum:ChangeState(Enum.HumanoidStateType.Climbing)
+                    hum.PlatformStand = false
+                elseif moveState == "Swimming" then
+                    hum:ChangeState(Enum.HumanoidStateType.Swimming)
+                else
+                    hum:ChangeState(Enum.HumanoidStateType.Running)
+                end
+                lastPlaybackState = moveState
+                lastStateChangeTime = currentTime
+            end
+        end
+    end)
 end
 
 local function StopPlaybackAction()
@@ -140,10 +183,8 @@ local function SaveRecord()
     
     local name = NameInput.Text ~= "" and NameInput.Text or ("Rute " .. (#RecordingOrder + 1))
     
-    -- JALANKAN MESIN PENYETRIKA (SMOOTHING) SEBELUM DISIMPAN
-    local finalFrames = SmoothFrames(StudioCurrentRecording.Frames)
-    RecordedMovements[name] = finalFrames
-    
+    -- LANGSUNG SIMPAN TANPA SMOOTHING ANEH-ANEH
+    RecordedMovements[name] = StudioCurrentRecording.Frames
     table.insert(RecordingOrder, name)
     
     local item = Instance.new("Frame")
@@ -176,7 +217,7 @@ local function SaveRecord()
     StudioCurrentRecording = {Frames = {}, StartTime = 0, Name = ""}
 end
 
--- [RAHASIA 2: PLAYBACK PAKE RENDERSTEPPED + LERP]
+-- MURNI PAKAI HEARTBEAT BYARUL, BUKAN RENDERSTEPPED LERP
 local function TogglePlayback()
     if IsPlaying then
         StopPlaybackAction()
@@ -197,90 +238,43 @@ local function TogglePlayback()
     local recording = RecordedMovements[targetName]
     local playbackStartTime = tick()
     local currentIdx = 1
+    local playbackAccumulator = 0
     
     lastPlaybackState = nil
     lastStateChangeTime = 0
     
-    -- MENGGUNAKAN RENDERSTEPPED UNTUK SINKRONISASI KAMERA & LAYAR HP 100%
-    playConn = RunService.RenderStepped:Connect(function()
+    playConn = RunService.Heartbeat:Connect(function(deltaTime)
         if not IsPlaying then return end
         
-        local elapsed = (tick() - playbackStartTime) * CurrentSpeed
+        playbackAccumulator = playbackAccumulator + deltaTime
         
-        -- Cari frame yang pas dengan waktu sekarang
-        while currentIdx < #recording and recording[currentIdx + 1].Timestamp <= elapsed do
-            currentIdx = currentIdx + 1
-        end
-        
-        local f1 = recording[currentIdx]
-        local f2 = recording[currentIdx + 1]
-        
-        if not f2 then
-            StopPlaybackAction()
-            ResumeBtn.Text = "RESUME / PLAY"
-            ResumeBtn.BackgroundColor3 = Color3.fromRGB(240, 150, 50)
-            FloatPlay.BackgroundColor3 = Color3.fromRGB(240, 150, 50)
-            if AutoLoop then 
-                task.wait(0.3) 
-                TogglePlayback() 
-            end 
-            return
-        end
-        
-        SafeCall(function()
-            local char = player.Character
-            local hrp = char and char:FindFirstChild("HumanoidRootPart")
-            local hum = char and char:FindFirstChildOfClass("Humanoid")
-            if not hrp or not hum then return end
+        while playbackAccumulator >= PLAYBACK_FIXED_TIMESTEP do
+            playbackAccumulator = playbackAccumulator - PLAYBACK_FIXED_TIMESTEP
             
-            hum.AutoRotate = false -- Anti-Kamera bengkok
+            local currentTime = tick()
+            local effectiveTime = (currentTime - playbackStartTime) * CurrentSpeed
             
-            -- LERP LOGIC: Menggabungkan 2 frame secara mikrosekon
-            local timeDiff = f2.Timestamp - f1.Timestamp
-            local alpha = (timeDiff > 0) and math.clamp((elapsed - f1.Timestamp) / timeDiff, 0, 1) or 0
-            
-            -- LERP UPVECTOR UNTUK BELOK MULUS
-            local cf1 = CFrame.lookAt(
-                Vector3.new(f1.Position[1], f1.Position[2], f1.Position[3]), 
-                Vector3.new(f1.Position[1], f1.Position[2], f1.Position[3]) + Vector3.new(f1.LookVector[1], f1.LookVector[2], f1.LookVector[3]),
-                Vector3.new(f1.UpVector[1], f1.UpVector[2], f1.UpVector[3])
-            )
-            local cf2 = CFrame.lookAt(
-                Vector3.new(f2.Position[1], f2.Position[2], f2.Position[3]), 
-                Vector3.new(f2.Position[1], f2.Position[2], f2.Position[3]) + Vector3.new(f2.LookVector[1], f2.LookVector[2], f2.LookVector[3]),
-                Vector3.new(f2.UpVector[1], f2.UpVector[2], f2.UpVector[3])
-            )
-            
-            hrp.CFrame = cf1:Lerp(cf2, alpha)
-            
-            local vel1 = GetFrameVelocity(f1, f1.MoveState)
-            local vel2 = GetFrameVelocity(f2, f2.MoveState)
-            hrp.AssemblyLinearVelocity = vel1:Lerp(vel2, alpha)
-            hrp.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
-            
-            hum.WalkSpeed = (f1.WalkSpeed + (f2.WalkSpeed - f1.WalkSpeed) * alpha) * CurrentSpeed
-            
-            -- [RAHASIA 3: STATE COOLDOWN]
-            local moveState = f1.MoveState
-            if vel1.Y > JUMP_VELOCITY_THRESHOLD then moveState = "Jumping"
-            elseif vel1.Y < -5 then moveState = "Falling" end
-            
-            if moveState == "Jumping" and lastPlaybackState ~= "Jumping" then
-                hum:ChangeState(Enum.HumanoidStateType.Jumping)
-                lastPlaybackState = "Jumping"
-                lastStateChangeTime = tick()
-            elseif moveState == "Falling" and lastPlaybackState ~= "Falling" then
-                hum:ChangeState(Enum.HumanoidStateType.Freefall)
-                lastPlaybackState = "Falling"
-                lastStateChangeTime = tick()
-            elseif tick() - lastStateChangeTime >= STATE_CHANGE_COOLDOWN then
-                if moveState == "Climbing" then hum:ChangeState(Enum.HumanoidStateType.Climbing)
-                elseif moveState == "Swimming" then hum:ChangeState(Enum.HumanoidStateType.Swimming)
-                else hum:ChangeState(Enum.HumanoidStateType.Running) end
-                lastPlaybackState = moveState
-                lastStateChangeTime = tick()
+            local nextFrame = currentIdx
+            while nextFrame < #recording and recording[nextFrame + 1].Timestamp <= effectiveTime do
+                nextFrame = nextFrame + 1
             end
-        end)
+            
+            if nextFrame >= #recording then
+                StopPlaybackAction()
+                ResumeBtn.Text = "RESUME / PLAY"
+                ResumeBtn.BackgroundColor3 = Color3.fromRGB(240, 150, 50)
+                FloatPlay.BackgroundColor3 = Color3.fromRGB(240, 150, 50)
+                
+                if AutoLoop then 
+                    task.wait(0.3) 
+                    TogglePlayback() 
+                end 
+                return
+            end
+            
+            ApplyFrameDirect(recording[nextFrame])
+            currentIdx = nextFrame
+        end
     end)
 end
 
@@ -460,48 +454,4 @@ FloatRec = Instance.new("TextButton")
 FloatRec.Size = UDim2.fromOffset(60, 60)
 FloatRec.BackgroundColor3 = Color3.fromRGB(219, 52, 63)
 FloatRec.Text = "●"
-FloatRec.TextColor3 = Color3.new(1, 1, 1)
-FloatRec.TextSize = 25
-FloatRec.Parent = FloatUI
-Instance.new("UICorner", FloatRec).CornerRadius = UDim.new(1, 0)
-
-FloatPlay = Instance.new("TextButton")
-FloatPlay.Size = UDim2.fromOffset(60, 60)
-FloatPlay.Position = UDim2.fromOffset(70, 0)
-FloatPlay.BackgroundColor3 = Color3.fromRGB(240, 150, 50)
-FloatPlay.Text = "<<"
-FloatPlay.TextColor3 = Color3.new(1, 1, 1)
-FloatPlay.TextSize = 25
-FloatPlay.Font = Enum.Font.GothamBold
-FloatPlay.Parent = FloatUI
-Instance.new("UICorner", FloatPlay).CornerRadius = UDim.new(1, 0)
-
-local OpenMenuBtn = Instance.new("TextButton")
-OpenMenuBtn.Size = UDim2.fromOffset(60, 20)
-OpenMenuBtn.Position = UDim2.fromOffset(35, 65)
-OpenMenuBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-OpenMenuBtn.Text = "MENU"
-OpenMenuBtn.TextColor3 = Color3.new(1, 1, 1)
-OpenMenuBtn.Font = Enum.Font.GothamBold
-OpenMenuBtn.TextSize = 10
-OpenMenuBtn.Parent = FloatUI
-Instance.new("UICorner", OpenMenuBtn).CornerRadius = UDim.new(0, 4)
-
--- Bindings
-RecordBtn.MouseButton1Click:Connect(ToggleRecord)
-FloatRec.MouseButton1Click:Connect(ToggleRecord)
-ResumeBtn.MouseButton1Click:Connect(TogglePlayback)
-FloatPlay.MouseButton1Click:Connect(TogglePlayback)
-SaveBtn.MouseButton1Click:Connect(SaveRecord)
-OpenMenuBtn.MouseButton1Click:Connect(function() MainFrame.Visible = not MainFrame.Visible end)
-
-LoopBtn.MouseButton1Click:Connect(function()
-    AutoLoop = not AutoLoop
-    LoopBtn.Text = AutoLoop and "🔄 ON" or "🔄 OFF"
-    LoopBtn.TextColor3 = AutoLoop and Color3.fromRGB(100, 255, 100) or Color3.fromRGB(150, 150, 255)
-end)
-
-SpeedInput.FocusLost:Connect(function()
-    local num = tonumber(SpeedInput.Text)
-    if num then CurrentSpeed = num else SpeedInput.Text = tostring(CurrentSpeed) end
-end)
+FloatRec.TextColor3 =
