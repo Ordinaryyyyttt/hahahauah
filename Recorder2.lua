@@ -1,5 +1,5 @@
 -- =====================================================================
--- FYY RECORDER | AUTO WALK (100% PURE BYARUL PHYSICS - NO LERP/NO GLIDE)
+-- FYY RECORDER | AUTO WALK (100% MURNI BYARUL ENGINE + LAG COMPENSATION)
 -- UI Design: Dashboard + Floating Mini Buttons 
 -- =====================================================================
 
@@ -7,13 +7,16 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local player = Players.LocalPlayer
 
--- ========= ENGINE CONFIGURATION =========
+-- ========= ENGINE CONFIGURATION (BYARUL STANDARD) =========
 local RECORDING_FPS = 60
 local VELOCITY_SCALE = 1
 local VELOCITY_Y_SCALE = 1
 local JUMP_VELOCITY_THRESHOLD = 10
 local PLAYBACK_FIXED_TIMESTEP = 1 / 60
 local STATE_CHANGE_COOLDOWN = 0.08 
+local LAG_DETECTION_THRESHOLD = 0.15
+local MAX_LAG_FRAMES_TO_SKIP = 3
+local INTERPOLATE_AFTER_LAG = true
 
 local IsRecording, IsPlaying, AutoLoop = false, false, false
 local CurrentSpeed = 1.0
@@ -31,7 +34,7 @@ local function SafeCall(func, ...)
     return success
 end
 
--- ========= PURE BYARUL PHYSICS LOGIC =========
+-- ========= CORE PHYSICS & STATE LOGIC =========
 local function GetCurrentMoveState(hum)
     if not hum then return "Grounded" end
     local state = hum:GetState()
@@ -56,30 +59,121 @@ local function GetFrameVelocity(frame, moveState)
     return Vector3.new(velocityX, velocityY, velocityZ)
 end
 
--- 100% COPY DARI BYARUL - TANPA LERP ANEH-ANEH
+local function GetFrameCFrame(frame)
+    if not frame then return CFrame.new() end
+    local pos = Vector3.new(frame.Position[1], frame.Position[2], frame.Position[3])
+    local look = Vector3.new(frame.LookVector[1], frame.LookVector[2], frame.LookVector[3])
+    local up = Vector3.new(frame.UpVector[1], frame.UpVector[2], frame.UpVector[3])
+    return CFrame.lookAt(pos, pos + look, up)
+end
+
+-- ========= RAHASIA 1: LAG COMPENSATION & NORMALIZATION =========
+local function DetectAndCompensateLag(frames)
+    if not frames or #frames < 3 then return frames end
+    
+    local compensatedFrames = {}
+    
+    for i = 1, #frames do
+        local frame = frames[i]
+        
+        if i > 1 then
+            local timeDiff = frame.Timestamp - frames[i-1].Timestamp
+            local expectedDiff = 1 / RECORDING_FPS
+            
+            if timeDiff > LAG_DETECTION_THRESHOLD then
+                local missedFrames = math.floor(timeDiff / expectedDiff) - 1
+                local framesToInterpolate = math.min(missedFrames, MAX_LAG_FRAMES_TO_SKIP)
+                
+                if INTERPOLATE_AFTER_LAG and framesToInterpolate > 0 then
+                    local prevFrame = frames[i-1]
+                    local nextFrame = frame
+                    
+                    for j = 1, framesToInterpolate do
+                        local alpha = j / (framesToInterpolate + 1)
+                        
+                        local pos1 = Vector3.new(prevFrame.Position[1], prevFrame.Position[2], prevFrame.Position[3])
+                        local pos2 = Vector3.new(nextFrame.Position[1], nextFrame.Position[2], nextFrame.Position[3])
+                        local interpPos = pos1:Lerp(pos2, alpha)
+                        
+                        local look1 = Vector3.new(prevFrame.LookVector[1], prevFrame.LookVector[2], prevFrame.LookVector[3])
+                        local look2 = Vector3.new(nextFrame.LookVector[1], nextFrame.LookVector[2], nextFrame.LookVector[3])
+                        local interpLook = look1:Lerp(look2, alpha).Unit
+                        
+                        local up1 = Vector3.new(prevFrame.UpVector[1], prevFrame.UpVector[2], prevFrame.UpVector[3])
+                        local up2 = Vector3.new(nextFrame.UpVector[1], nextFrame.UpVector[2], nextFrame.UpVector[3])
+                        local interpUp = up1:Lerp(up2, alpha).Unit
+                        
+                        local vel1 = Vector3.new(prevFrame.Velocity[1], prevFrame.Velocity[2], prevFrame.Velocity[3])
+                        local vel2 = Vector3.new(nextFrame.Velocity[1], nextFrame.Velocity[2], nextFrame.Velocity[3])
+                        local interpVel = vel1:Lerp(vel2, alpha)
+                        
+                        local interpWS = prevFrame.WalkSpeed + (nextFrame.WalkSpeed - prevFrame.WalkSpeed) * alpha
+                        
+                        table.insert(compensatedFrames, {
+                            Position = {interpPos.X, interpPos.Y, interpPos.Z},
+                            LookVector = {interpLook.X, interpLook.Y, interpLook.Z},
+                            UpVector = {interpUp.X, interpUp.Y, interpUp.Z},
+                            Velocity = {interpVel.X, interpVel.Y, interpVel.Z},
+                            MoveState = prevFrame.MoveState,
+                            WalkSpeed = interpWS,
+                            Timestamp = prevFrame.Timestamp + (j * expectedDiff)
+                        })
+                    end
+                end
+            end
+        end
+        table.insert(compensatedFrames, frame)
+    end
+    return compensatedFrames
+end
+
+local function NormalizeRecordingTimestamps(recording)
+    if not recording or #recording == 0 then return recording end
+    
+    local lagCompensated = DetectAndCompensateLag(recording)
+    local normalized = {}
+    local expectedFrameTime = 1 / RECORDING_FPS
+    
+    for i, frame in ipairs(lagCompensated) do
+        local newFrame = {
+            Position = frame.Position, LookVector = frame.LookVector, UpVector = frame.UpVector,
+            Velocity = frame.Velocity, MoveState = frame.MoveState, WalkSpeed = frame.WalkSpeed,
+            Timestamp = 0
+        }
+        
+        if i == 1 then
+            newFrame.Timestamp = 0
+        else
+            local prevTimestamp = normalized[i-1].Timestamp
+            local originalTimeDiff = frame.Timestamp - lagCompensated[i-1].Timestamp
+            
+            if originalTimeDiff > (expectedFrameTime * 3) then
+                newFrame.Timestamp = prevTimestamp + expectedFrameTime
+            else
+                newFrame.Timestamp = prevTimestamp + math.max(originalTimeDiff, expectedFrameTime * 0.5)
+            end
+        end
+        table.insert(normalized, newFrame)
+    end
+    return normalized
+end
+
+-- ========= PLAYBACK APPLICATION =========
 local function ApplyFrameDirect(frame)
     SafeCall(function()
         local char = player.Character
         if not char or not char:FindFirstChild("HumanoidRootPart") then return end
-        
         local hrp = char:FindFirstChild("HumanoidRootPart")
         local hum = char:FindFirstChildOfClass("Humanoid")
-        
         if not hrp or not hum then return end
         
-        -- Apply CFrame presisi dengan UpVector
-        local pos = Vector3.new(frame.Position[1], frame.Position[2], frame.Position[3])
-        local look = Vector3.new(frame.LookVector[1], frame.LookVector[2], frame.LookVector[3])
-        local up = Vector3.new(frame.UpVector[1], frame.UpVector[2], frame.UpVector[3])
-        hrp.CFrame = CFrame.lookAt(pos, pos + look, up)
-        
-        -- Apply Velocity Smart
+        hrp.CFrame = GetFrameCFrame(frame)
         hrp.AssemblyLinearVelocity = GetFrameVelocity(frame, frame.MoveState)
         hrp.AssemblyAngularVelocity = Vector3.zero
         
         local frameWalkSpeed = (frame.WalkSpeed or 16) * CurrentSpeed
         hum.WalkSpeed = frameWalkSpeed
-        hum.AutoRotate = false -- MATIIN ROTASI
+        hum.AutoRotate = false 
         
         local moveState = frame.MoveState
         local frameVelocity = GetFrameVelocity(frame, frame.MoveState)
@@ -127,7 +221,6 @@ local function StopPlaybackAction()
     IsPlaying = false
     if playConn then playConn:Disconnect() end
     lastPlaybackState = nil
-    
     local char = player.Character
     local hum = char and char:FindFirstChildOfClass("Humanoid")
     if hum then hum.AutoRotate = true end
@@ -183,8 +276,10 @@ local function SaveRecord()
     
     local name = NameInput.Text ~= "" and NameInput.Text or ("Rute " .. (#RecordingOrder + 1))
     
-    -- LANGSUNG SIMPAN TANPA SMOOTHING ANEH-ANEH
-    RecordedMovements[name] = StudioCurrentRecording.Frames
+    -- JALANKAN MESIN NORMALISASI SEBELUM DISIMPAN (RAHASIA MULUS BYARUL)
+    local normalizedFrames = NormalizeRecordingTimestamps(StudioCurrentRecording.Frames)
+    RecordedMovements[name] = normalizedFrames
+    
     table.insert(RecordingOrder, name)
     
     local item = Instance.new("Frame")
@@ -217,7 +312,6 @@ local function SaveRecord()
     StudioCurrentRecording = {Frames = {}, StartTime = 0, Name = ""}
 end
 
--- MURNI PAKAI HEARTBEAT BYARUL, BUKAN RENDERSTEPPED LERP
 local function TogglePlayback()
     if IsPlaying then
         StopPlaybackAction()
@@ -236,6 +330,17 @@ local function TogglePlayback()
     FloatPlay.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
     
     local recording = RecordedMovements[targetName]
+    
+    -- TELEPORT AWAL BIAR GAK RUBBERBAND
+    local char = player.Character
+    if char and char:FindFirstChild("HumanoidRootPart") then
+        local hrp = char.HumanoidRootPart
+        hrp.CFrame = GetFrameCFrame(recording[1])
+        hrp.AssemblyLinearVelocity = Vector3.zero
+        hrp.AssemblyAngularVelocity = Vector3.zero
+        task.wait(0.03)
+    end
+    
     local playbackStartTime = tick()
     local currentIdx = 1
     local playbackAccumulator = 0
@@ -251,8 +356,7 @@ local function TogglePlayback()
         while playbackAccumulator >= PLAYBACK_FIXED_TIMESTEP do
             playbackAccumulator = playbackAccumulator - PLAYBACK_FIXED_TIMESTEP
             
-            local currentTime = tick()
-            local effectiveTime = (currentTime - playbackStartTime) * CurrentSpeed
+            local effectiveTime = (tick() - playbackStartTime) * CurrentSpeed
             
             local nextFrame = currentIdx
             while nextFrame < #recording and recording[nextFrame + 1].Timestamp <= effectiveTime do
@@ -293,7 +397,6 @@ MainFrame.Active = true
 MainFrame.Draggable = true
 MainFrame.Parent = ScreenGui
 Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 10)
-
 local MainStroke = Instance.new("UIStroke")
 MainStroke.Color = Color3.fromRGB(219, 52, 63)
 MainStroke.Thickness = 2
@@ -454,4 +557,48 @@ FloatRec = Instance.new("TextButton")
 FloatRec.Size = UDim2.fromOffset(60, 60)
 FloatRec.BackgroundColor3 = Color3.fromRGB(219, 52, 63)
 FloatRec.Text = "●"
-FloatRec.TextColor3 =
+FloatRec.TextColor3 = Color3.new(1, 1, 1)
+FloatRec.TextSize = 25
+FloatRec.Parent = FloatUI
+Instance.new("UICorner", FloatRec).CornerRadius = UDim.new(1, 0)
+
+FloatPlay = Instance.new("TextButton")
+FloatPlay.Size = UDim2.fromOffset(60, 60)
+FloatPlay.Position = UDim2.fromOffset(70, 0)
+FloatPlay.BackgroundColor3 = Color3.fromRGB(240, 150, 50)
+FloatPlay.Text = "<<"
+FloatPlay.TextColor3 = Color3.new(1, 1, 1)
+FloatPlay.TextSize = 25
+FloatPlay.Font = Enum.Font.GothamBold
+FloatPlay.Parent = FloatUI
+Instance.new("UICorner", FloatPlay).CornerRadius = UDim.new(1, 0)
+
+local OpenMenuBtn = Instance.new("TextButton")
+OpenMenuBtn.Size = UDim2.fromOffset(60, 20)
+OpenMenuBtn.Position = UDim2.fromOffset(35, 65)
+OpenMenuBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+OpenMenuBtn.Text = "MENU"
+OpenMenuBtn.TextColor3 = Color3.new(1, 1, 1)
+OpenMenuBtn.Font = Enum.Font.GothamBold
+OpenMenuBtn.TextSize = 10
+OpenMenuBtn.Parent = FloatUI
+Instance.new("UICorner", OpenMenuBtn).CornerRadius = UDim.new(0, 4)
+
+-- Bindings
+RecordBtn.MouseButton1Click:Connect(ToggleRecord)
+FloatRec.MouseButton1Click:Connect(ToggleRecord)
+ResumeBtn.MouseButton1Click:Connect(TogglePlayback)
+FloatPlay.MouseButton1Click:Connect(TogglePlayback)
+SaveBtn.MouseButton1Click:Connect(SaveRecord)
+OpenMenuBtn.MouseButton1Click:Connect(function() MainFrame.Visible = not MainFrame.Visible end)
+
+LoopBtn.MouseButton1Click:Connect(function()
+    AutoLoop = not AutoLoop
+    LoopBtn.Text = AutoLoop and "🔄 ON" or "🔄 OFF"
+    LoopBtn.TextColor3 = AutoLoop and Color3.fromRGB(100, 255, 100) or Color3.fromRGB(150, 150, 255)
+end)
+
+SpeedInput.FocusLost:Connect(function()
+    local num = tonumber(SpeedInput.Text)
+    if num then CurrentSpeed = num else SpeedInput.Text = tostring(CurrentSpeed) end
+end)
