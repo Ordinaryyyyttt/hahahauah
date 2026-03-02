@@ -1,11 +1,10 @@
 -- =====================================================================
--- FYY RECORDER | AUTO WALK (60 FPS Ultra Smooth Physics Engine)
--- UI Design: Dashboard + Floating Mini Buttons (No Bug)
+-- FYY RECORDER | AUTO WALK (100% BYARUL PHYSICS ENGINE)
+-- UI Design: Dashboard + Floating Mini Buttons 
 -- =====================================================================
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local HttpService = game:GetService("HttpService")
 local player = Players.LocalPlayer
 
 -- ========= ENGINE CONFIGURATION =========
@@ -14,6 +13,7 @@ local VELOCITY_SCALE = 1
 local VELOCITY_Y_SCALE = 1
 local JUMP_VELOCITY_THRESHOLD = 10
 local PLAYBACK_FIXED_TIMESTEP = 1 / 60
+local STATE_CHANGE_COOLDOWN = 0.08 -- RAHASIA ANTI SPAM ANIMASI
 
 local IsRecording, IsPlaying, AutoLoop = false, false, false
 local CurrentSpeed = 1.0
@@ -22,13 +22,16 @@ local RecordedMovements = {}
 local RecordingOrder = {}
 local recordConn, playConn
 
+local lastPlaybackState = nil
+local lastStateChangeTime = 0
+
 local function SafeCall(func, ...)
     local success, err = pcall(func, ...)
     if not success then warn("Fyy Error:", err) end
     return success
 end
 
--- ========= ADVANCED PHYSICS LOGIC =========
+-- ========= ADVANCED PHYSICS LOGIC (BYARUL COPY) =========
 local function GetCurrentMoveState(hum)
     if not hum then return "Grounded" end
     local state = hum:GetState()
@@ -53,21 +56,59 @@ local function ApplyFrameDirect(frame)
         local hum = char and char:FindFirstChildOfClass("Humanoid")
         if not hrp or not hum then return end
         
-        -- MATIKAN AUTOROTATE BENGKOK (Rahasia Anti-Getar)
-        hum.AutoRotate = false
-        
+        -- MENGGUNAKAN UPVECTOR AGAR BELOK & MIRING 100% MULUS!
         hrp.CFrame = CFrame.lookAt(
             Vector3.new(frame.Position[1], frame.Position[2], frame.Position[3]), 
-            Vector3.new(frame.Position[1], frame.Position[2], frame.Position[3]) + Vector3.new(frame.LookVector[1], frame.LookVector[2], frame.LookVector[3])
+            Vector3.new(frame.Position[1], frame.Position[2], frame.Position[3]) + Vector3.new(frame.LookVector[1], frame.LookVector[2], frame.LookVector[3]),
+            Vector3.new(frame.UpVector[1], frame.UpVector[2], frame.UpVector[3]) -- INI YANG BIKIN BELOK HALUS
         )
+        
         hrp.AssemblyLinearVelocity = GetFrameVelocity(frame, frame.MoveState)
         hrp.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
-        hum.WalkSpeed = (frame.WalkSpeed or 16) * CurrentSpeed
         
-        local frameVel = GetFrameVelocity(frame, frame.MoveState)
-        if frameVel.Y > JUMP_VELOCITY_THRESHOLD then hum:ChangeState(Enum.HumanoidStateType.Jumping)
-        elseif frameVel.Y < -5 then hum:ChangeState(Enum.HumanoidStateType.Freefall)
-        elseif frame.MoveState == "Climbing" then hum:ChangeState(Enum.HumanoidStateType.Climbing)
+        local frameWalkSpeed = (frame.WalkSpeed or 16) * CurrentSpeed
+        hum.WalkSpeed = frameWalkSpeed
+        hum.AutoRotate = false -- KUNCI KAMERA BIAR GAK GETAR
+        
+        local moveState = frame.MoveState
+        local frameVelocity = GetFrameVelocity(frame, frame.MoveState)
+        local currentTime = tick()
+        
+        local isJumpingByVelocity = frameVelocity.Y > JUMP_VELOCITY_THRESHOLD
+        local isFallingByVelocity = frameVelocity.Y < -5
+        
+        if isJumpingByVelocity and moveState ~= "Jumping" then
+            moveState = "Jumping"
+        elseif isFallingByVelocity and moveState ~= "Falling" then
+            moveState = "Falling"
+        end
+        
+        -- COOLDOWN ANIMASI AGAR TIDAK PATAH-PATAH
+        if moveState == "Jumping" then
+            if lastPlaybackState ~= "Jumping" then
+                hum:ChangeState(Enum.HumanoidStateType.Jumping)
+                lastPlaybackState = "Jumping"
+                lastStateChangeTime = currentTime
+            end
+        elseif moveState == "Falling" then
+            if lastPlaybackState ~= "Falling" then
+                hum:ChangeState(Enum.HumanoidStateType.Freefall)
+                lastPlaybackState = "Falling"
+                lastStateChangeTime = currentTime
+            end
+        else
+            if moveState ~= lastPlaybackState and (currentTime - lastStateChangeTime) >= STATE_CHANGE_COOLDOWN then
+                if moveState == "Climbing" then
+                    hum:ChangeState(Enum.HumanoidStateType.Climbing)
+                    hum.PlatformStand = false
+                elseif moveState == "Swimming" then
+                    hum:ChangeState(Enum.HumanoidStateType.Swimming)
+                else
+                    hum:ChangeState(Enum.HumanoidStateType.Running)
+                end
+                lastPlaybackState = moveState
+                lastStateChangeTime = currentTime
+            end
         end
     end)
 end
@@ -75,16 +116,17 @@ end
 local function StopPlaybackAction()
     IsPlaying = false
     if playConn then playConn:Disconnect() end
+    lastPlaybackState = nil
     
     local char = player.Character
     local hum = char and char:FindFirstChildOfClass("Humanoid")
-    if hum then hum.AutoRotate = true end -- Balikin rotasi normal
+    if hum then hum.AutoRotate = true end
 end
 
 -- UI Declarations
 local ScreenGui, MainFrame, RecordList, RecordBtn, ResumeBtn, NameInput, FloatRec, FloatPlay
 
--- ========= CORE RECORDING & PLAYBACK LOGIC =========
+-- ========= CORE RECORDING LOGIC =========
 local function ToggleRecord()
     if IsRecording then 
         IsRecording = false
@@ -103,6 +145,7 @@ local function ToggleRecord()
     
     local char = player.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
     local lastRecordTime = tick()
     
     recordConn = RunService.Heartbeat:Connect(function()
@@ -115,9 +158,11 @@ local function ToggleRecord()
         table.insert(StudioCurrentRecording.Frames, {
             Position = {cf.Position.X, cf.Position.Y, cf.Position.Z},
             LookVector = {cf.LookVector.X, cf.LookVector.Y, cf.LookVector.Z},
+            UpVector = {cf.UpVector.X, cf.UpVector.Y, cf.UpVector.Z}, -- DIREKAM BIAR BELOK MULUS
             Velocity = {hrp.AssemblyLinearVelocity.X, hrp.AssemblyLinearVelocity.Y, hrp.AssemblyLinearVelocity.Z},
-            MoveState = GetCurrentMoveState(char:FindFirstChildOfClass("Humanoid")),
-            Timestamp = (now - StudioCurrentRecording.StartTime)
+            MoveState = GetCurrentMoveState(hum),
+            WalkSpeed = hum and hum.WalkSpeed or 16,
+            Timestamp = now - StudioCurrentRecording.StartTime
         })
     end)
 end
@@ -178,11 +223,13 @@ local function TogglePlayback()
     FloatPlay.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
     
     local recording = RecordedMovements[targetName]
-    local startTick = tick()
+    local playbackStartTime = tick()
     local currentIdx = 1
     local playbackAccumulator = 0
     
-    -- MENGGUNAKAN HEARTBEAT & TIMESTEP FIX BUKAN LERP MENTAH
+    lastPlaybackState = nil
+    lastStateChangeTime = 0
+    
     playConn = RunService.Heartbeat:Connect(function(deltaTime)
         if not IsPlaying then return end
         
@@ -190,10 +237,11 @@ local function TogglePlayback()
         
         while playbackAccumulator >= PLAYBACK_FIXED_TIMESTEP do
             playbackAccumulator = playbackAccumulator - PLAYBACK_FIXED_TIMESTEP
-            local elapsed = (tick() - startTick) * CurrentSpeed
+            
+            local effectiveTime = (tick() - playbackStartTime) * CurrentSpeed
             
             local nextFrame = currentIdx
-            while nextFrame < #recording and recording[nextFrame + 1].Timestamp <= elapsed do
+            while nextFrame < #recording and recording[nextFrame + 1].Timestamp <= effectiveTime do
                 nextFrame = nextFrame + 1
             end
             
@@ -222,7 +270,6 @@ ScreenGui.Name = "FyyRecorderUI"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = player:WaitForChild("PlayerGui")
 
--- 1. MAIN DASHBOARD
 MainFrame = Instance.new("Frame")
 MainFrame.Size = UDim2.fromOffset(450, 280)
 MainFrame.Position = UDim2.new(0.5, -225, 0.5, -140)
@@ -238,7 +285,6 @@ MainStroke.Color = Color3.fromRGB(219, 52, 63)
 MainStroke.Thickness = 2
 MainStroke.Parent = MainFrame
 
--- Header
 local Header = Instance.new("Frame")
 Header.Size = UDim2.new(1, 0, 0, 35)
 Header.BackgroundTransparency = 1
@@ -266,7 +312,6 @@ CloseBtn.Parent = Header
 Instance.new("UICorner", CloseBtn).CornerRadius = UDim.new(0, 6)
 CloseBtn.MouseButton1Click:Connect(function() MainFrame.Visible = false end)
 
--- Panels
 local LeftPanel = Instance.new("Frame")
 LeftPanel.Size = UDim2.new(0.45, 0, 1, -45)
 LeftPanel.Position = UDim2.new(0, 15, 0, 35)
@@ -297,7 +342,6 @@ local function CreateHeaderLabel(text, parent)
     lbl.Parent = parent
 end
 
--- Controls
 CreateHeaderLabel("🎬 CONTROLS", LeftPanel)
 
 RecordBtn = Instance.new("TextButton")
@@ -320,7 +364,6 @@ ResumeBtn.TextSize = 13
 ResumeBtn.Parent = LeftPanel
 Instance.new("UICorner", ResumeBtn).CornerRadius = UDim.new(0, 8)
 
--- Playback Settings
 CreateHeaderLabel("⚙ PLAYBACK", LeftPanel)
 
 local PlaybackRow = Instance.new("Frame")
@@ -328,7 +371,7 @@ PlaybackRow.Size = UDim2.new(1, 0, 0, 30)
 PlaybackRow.BackgroundTransparency = 1
 PlaybackRow.Parent = LeftPanel
 
-local SpeedInput = Instance.new("TextBox")
+SpeedInput = Instance.new("TextBox")
 SpeedInput.Size = UDim2.new(0.48, 0, 1, 0)
 SpeedInput.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
 SpeedInput.Text = "1.0"
@@ -347,7 +390,6 @@ LoopBtn.Font = Enum.Font.GothamBold
 LoopBtn.Parent = PlaybackRow
 Instance.new("UICorner", LoopBtn).CornerRadius = UDim.new(0, 6)
 
--- Save System
 CreateHeaderLabel("💾 SAVE", LeftPanel)
 
 NameInput = Instance.new("TextBox")
@@ -369,7 +411,6 @@ SaveBtn.Font = Enum.Font.GothamBold
 SaveBtn.Parent = LeftPanel
 Instance.new("UICorner", SaveBtn).CornerRadius = UDim.new(0, 8)
 
--- Checkpoints List
 local RightTopRow = Instance.new("Frame")
 RightTopRow.Size = UDim2.new(1, -20, 0, 25)
 RightTopRow.Position = UDim2.new(0, 10, 0, 5)
@@ -387,7 +428,6 @@ local ListLayout = Instance.new("UIListLayout")
 ListLayout.Padding = UDim.new(0, 5)
 ListLayout.Parent = RecordList
 
--- 2. FLOATING MINI BUTTONS (Bisa Digeser)
 local FloatUI = Instance.new("Frame")
 FloatUI.Size = UDim2.fromOffset(130, 60)
 FloatUI.Position = UDim2.new(0.5, -65, 0.1, 0)
@@ -430,10 +470,8 @@ Instance.new("UICorner", OpenMenuBtn).CornerRadius = UDim.new(0, 4)
 -- Bindings
 RecordBtn.MouseButton1Click:Connect(ToggleRecord)
 FloatRec.MouseButton1Click:Connect(ToggleRecord)
-
 ResumeBtn.MouseButton1Click:Connect(TogglePlayback)
 FloatPlay.MouseButton1Click:Connect(TogglePlayback)
-
 SaveBtn.MouseButton1Click:Connect(SaveRecord)
 OpenMenuBtn.MouseButton1Click:Connect(function() MainFrame.Visible = not MainFrame.Visible end)
 
