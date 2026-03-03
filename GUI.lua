@@ -13,8 +13,6 @@ UI_2.Position = UDim2.new(0, 50, 0, 50)
 UI_2.BackgroundColor3 = Color3.new(0.05882352963089943, 0.05882352963089943, 0.05882352963089943)
 UI_2.BackgroundTransparency = 0
 UI_2.Visible = false
-UI_2.Image = 'rbxassetid://116721573962136'
-UI_2.ImageColor3 = Color3.new(1, 1, 1)
 
 local UI_3 = Instance.new('UICorner')
 UI_3.Name = 'UICorner'
@@ -49,8 +47,6 @@ UI_8.Position = UDim2.new(0, -15, 0, -15)
 UI_8.BackgroundColor3 = Color3.new(0.6392157077789307, 0.6352941393852234, 0.6470588445663452)
 UI_8.BackgroundTransparency = 1
 UI_8.Visible = true
-UI_8.Image = 'rbxassetid://1316045217'
-UI_8.ImageColor3 = Color3.new(0, 0, 0)
 
 local UI_9 = Instance.new('Frame')
 UI_9.Name = 'TitleBar'
@@ -73,8 +69,6 @@ UI_11.Position = UDim2.new(0, 8, 0, 5)
 UI_11.BackgroundColor3 = Color3.new(0.6392157077789307, 0.6352941393852234, 0.6470588445663452)
 UI_11.BackgroundTransparency = 1
 UI_11.Visible = true
-UI_11.Image = 'rbxassetid://116721573962136'
-UI_11.ImageColor3 = Color3.new(1, 1, 1)
 
 local UI_12 = Instance.new('UICorner')
 UI_12.Name = 'UICorner'
