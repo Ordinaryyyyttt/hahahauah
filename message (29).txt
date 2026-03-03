@@ -1,0 +1,962 @@
+-- =====================================================
+-- AUTO KATA v5.5 | by dhann x sazaraaax
+-- Script: Sambung Kata (Roblox)
+-- Cleaned from deobfuscated dump
+-- =====================================================
+
+-- =====================================================
+-- GUARD: Cegah double-load
+-- =====================================================
+if _G["AutoKataActive"] then
+    print("[AutoKata] Script sudah aktif, skip.")
+    return
+end
+_G["AutoKataActive"] = true
+_G["AutoKataDestroy"] = nil
+
+print("[AutoKata] Start loaded=" .. tostring(game:IsLoaded()))
+
+-- =====================================================
+-- SERVICES
+-- =====================================================
+local ReplicatedStorage  = game:GetService("ReplicatedStorage")
+local TeleportService    = game:GetService("TeleportService")
+local Workspace          = game:GetService("Workspace")
+local HttpService        = game:GetService("HttpService")
+local Lighting           = game:GetService("Lighting")
+local VirtualInput       = game:GetService("VirtualInputManager")
+local Players            = game:GetService("Players")
+local MarketplaceService = game:GetService("MarketplaceService")
+local LocalPlayer        = Players.LocalPlayer
+
+-- =====================================================
+-- CHECK: Apakah bisa save file
+-- =====================================================
+local CAN_SAVE = false
+pcall(function()
+    writefile("_ak_.tmp", "1")
+    delfile("_ak_.tmp")
+    CAN_SAVE = true
+end)
+print("[AutoKata] CAN_SAVE=" .. tostring(CAN_SAVE) .. " Player=" .. LocalPlayer.Name)
+
+-- =====================================================
+-- DESTROY UI LAMA (DhannUltra / DhannClean)
+-- =====================================================
+task.delay(0.5, function()
+    local gui = LocalPlayer:FindFirstChild("PlayerGui")
+    if gui then
+        local ultra = gui:FindFirstChild("DhannUltra")
+        local clean  = gui:FindFirstChild("DhannClean")
+        if ultra then ultra:Destroy() end
+        if clean  then clean:Destroy()  end
+    end
+end)
+
+-- =====================================================
+-- LOAD EXTERNAL: Wordlist KBBI
+-- =====================================================
+print("[AutoKata] Loading KBBI wordlist...")
+local wordlistData = loadstring(game:HttpGet(
+    "https://raw.githubusercontent.com/danzzy1we/roblox-script-dump/refs/heads/main/WordListDump/KBBI_Final_Working.lua"
+))()
+
+local words = wordlistData and wordlistData["words"] or {}
+local lastWord = ""
+local lastWordLen = 0
+
+-- Simpan kata terakhir dari wordlist untuk referensi awal
+for _, word in pairs(words) do
+    lastWord    = string.lower(tostring(tostring(word)))
+    lastWordLen = #lastWord
+end
+print("[AutoKata] KBBI loaded. Total kata: " .. tostring(#words))
+
+-- =====================================================
+-- LOAD EXTERNAL: Helper scripts
+-- =====================================================
+print("[AutoKata] Loading helper scripts...")
+local _copylinkHelper = loadstring(game:HttpGet(
+    "https://raw.githubusercontent.com/danzzy1we/gokil2/refs/heads/main/copylinkgithub.lua"
+))()
+
+local _runner = loadstring(game:HttpGet(
+    "https://raw.githubusercontent.com/fay23-dam/sazaraaax-script/refs/heads/main/runner.lua"
+))()
+
+task.wait(3)
+
+-- =====================================================
+-- LOAD EXTERNAL: Wind UI Library
+-- =====================================================
+print("[AutoKata] Loading Wind UI...")
+local WindUI = loadstring(game:HttpGet(
+    "https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"
+))()
+
+-- =====================================================
+-- REMOTES
+-- =====================================================
+local Remotes       = ReplicatedStorage:WaitForChild("Remotes")
+local SubmitWord    = Remotes:WaitForChild("SubmitWord")
+local BillboardEnd  = Remotes:WaitForChild("BillboardEnd", 3)
+local TypeSound     = Remotes:WaitForChild("TypeSound")
+
+-- =====================================================
+-- KEYCODES (A-Z) untuk VirtualInputManager
+-- =====================================================
+local KeyCode = {
+    A = Enum.KeyCode.A, B = Enum.KeyCode.B, C = Enum.KeyCode.C,
+    D = Enum.KeyCode.D, E = Enum.KeyCode.E, F = Enum.KeyCode.F,
+    G = Enum.KeyCode.G, H = Enum.KeyCode.H, I = Enum.KeyCode.I,
+    J = Enum.KeyCode.J, K = Enum.KeyCode.K, L = Enum.KeyCode.L,
+    M = Enum.KeyCode.M, N = Enum.KeyCode.N, O = Enum.KeyCode.O,
+    P = Enum.KeyCode.P, Q = Enum.KeyCode.Q, R = Enum.KeyCode.R,
+    S = Enum.KeyCode.S, T = Enum.KeyCode.T, U = Enum.KeyCode.U,
+    V = Enum.KeyCode.V, W = Enum.KeyCode.W, X = Enum.KeyCode.X,
+    Y = Enum.KeyCode.Y, Z = Enum.KeyCode.Z,
+}
+
+-- =====================================================
+-- WAIT: Tunggu game siap (~20 detik)
+-- =====================================================
+task.spawn(function()
+    -- 113 frame wait (~18.8 detik @ 60fps)
+    task.wait(20)
+end)
+
+-- =====================================================
+-- STATE & CONFIG
+-- =====================================================
+local Config = {
+    autoEnabled     = false,
+    autoJoinMode    = "off",
+    autoClick       = false,
+    maxLength       = 12,
+    minLength       = 2,
+    aggression      = 20,
+    compeMode       = false,
+    minDelay        = 0.5,
+    maxDelay        = 1.0,
+    autoClickDelay  = 1.5,
+    submitDelay     = 1.0,
+    initialDelay    = 0,
+    activeWordlist  = "Safety Anti Detek (KBBI)",
+    speed           = "Fast",
+    theme           = "Dark",
+}
+
+local activeWords = words  -- wordlist aktif
+local selectedWord = nil   -- kata yang dipilih manual
+
+-- =====================================================
+-- HELPER: Simpan config ke file JSON
+-- =====================================================
+local function saveConfig()
+    if not CAN_SAVE then return end
+    local json = HttpService:JSONEncode({
+        autoEnabled     = Config.autoEnabled,
+        autoJoinMode    = Config.autoJoinMode,
+        autoClick       = Config.autoClick,
+        maxLength       = Config.maxLength,
+        minLength       = Config.minLength,
+        aggression      = Config.aggression,
+        compeMode       = Config.compeMode,
+        minDelay        = Config.minDelay,
+        maxDelay        = Config.maxDelay,
+        autoClickDelay  = Config.autoClickDelay,
+        submitDelay     = Config.submitDelay,
+        initialDelay    = Config.initialDelay,
+        activeWordlist  = Config.activeWordlist,
+        speed           = Config.speed,
+    })
+    writefile("autokata_config.json", json)
+    print("[AutoKata] Config saved.")
+end
+
+-- =====================================================
+-- HELPER: Load config dari file JSON
+-- =====================================================
+local function loadConfig()
+    if not CAN_SAVE then return end
+    pcall(function()
+        local raw = readfile("autokata_config.json")
+        local data = HttpService:JSONDecode(raw)
+        for k, v in pairs(data) do
+            Config[k] = v
+        end
+        print("[AutoKata] Config loaded.")
+    end)
+end
+
+-- =====================================================
+-- HELPER: Reset ke default
+-- =====================================================
+local function resetConfig()
+    if not CAN_SAVE then return end
+    pcall(function() delfile("autokata_config.json") end)
+    print("[AutoKata] Config reset to default.")
+end
+
+-- =====================================================
+-- HELPER: Type kata dengan VirtualInputManager
+-- =====================================================
+local function typeWord(word)
+    for i = 1, #word do
+        local char = word:sub(i, i):upper()
+        local key  = KeyCode[char]
+        if key then
+            VirtualInput:SendKeyEvent(true, key, false, game)
+            task.wait(0.05)
+            VirtualInput:SendKeyEvent(false, key, false, game)
+            task.wait(0.04)
+        end
+    end
+end
+
+-- =====================================================
+-- HELPER: Cari kata yang dimulai dengan huruf tertentu
+-- =====================================================
+local TRAP_ENDINGS = {i=true, f=true, x=true, v=true, y=true, w=true}
+
+local function findWord(startChar, wordList, cfg)
+    local candidates = {}
+    local sc = startChar:lower()
+    for _, w in ipairs(wordList) do
+        local wl = w:lower()
+        if wl:sub(1,1) == sc
+        and #wl >= cfg.minLength
+        and #wl <= cfg.maxLength then
+            local endChar = wl:sub(-1)
+            if cfg.compeMode and TRAP_ENDINGS[endChar] then
+                -- skip kata berakhiran jebakan (hanya Compe Mode)
+            else
+                table.insert(candidates, wl)
+            end
+        end
+    end
+    if #candidates == 0 then return nil end
+
+    -- Aggression: makin tinggi = pilih kata lebih panjang
+    local aggrIndex = math.max(1, math.floor(#candidates * (cfg.aggression / 100)))
+    table.sort(candidates, function(a, b) return #a > #b end)
+    return candidates[math.min(aggrIndex, #candidates)]
+end
+
+-- =====================================================
+-- HELPER: Preset kecepatan
+-- =====================================================
+local function applySpeedPreset(speed)
+    if speed == "Slow" then
+        Config.minDelay = 1.5
+        Config.maxDelay = 3.0
+    elseif speed == "Fast" then
+        Config.minDelay = 0.5
+        Config.maxDelay = 1.0
+    elseif speed == "Superfast" then
+        Config.minDelay = 0.1
+        Config.maxDelay = 0.3
+    end
+end
+
+applySpeedPreset(Config.speed)
+
+-- =====================================================
+-- CURRENT GAME INFO
+-- =====================================================
+local currentTable = LocalPlayer:GetAttribute("CurrentTable")
+local currentSeats = {}
+if currentTable then
+    local tableObj  = Workspace:FindFirstChild("Tables")
+    if tableObj then
+        local tblFolder = tableObj:FindFirstChild(currentTable)
+        if tblFolder then
+            local seats = tblFolder:FindFirstChild("Seats")
+            if seats then
+                for _, seat in ipairs(seats:GetChildren()) do
+                    if seat:IsA("Seat") then
+                        table.insert(currentSeats, seat)
+                    end
+                end
+            end
+        end
+    end
+end
+print("[AutoKata] Table: " .. tostring(currentTable))
+
+-- =====================================================
+-- LOAD CONFIG SAAT START
+-- =====================================================
+loadConfig()
+
+-- =====================================================
+-- BUILD UI
+-- =====================================================
+local Window = WindUI:CreateWindow({
+    Title        = "Sambung-kata",
+    Icon         = "zap",
+    Author       = "by dhann x sazaraaax",
+    Folder       = "SambungKata",
+    Size         = UDim2.fromOffset(580, 490),
+    Resizable    = true,
+    Theme        = Config.theme,
+    HideSearchBar= true,
+    User = {
+        Enabled  = true,
+        Anonymous= false,
+        Callback = function()
+            WindUI:Notify({
+                Icon     = "user",
+                Title    = LocalPlayer.Name,
+                Content  = "ID: " .. LocalPlayer.UserId .. " | Age: " .. LocalPlayer.AccountAge .. " hari",
+                Duration = 4,
+            })
+        end,
+    },
+})
+
+-- Expose destroy ke global agar bisa unload
+_G["AutoKataDestroy"] = function()
+    Window:Destroy()
+    _G["AutoKataDestroy"] = nil
+    _G["AutoKataActive"]  = false
+end
+
+-- ============================================================
+-- TAB: MAIN
+-- ============================================================
+local TabMain = Window:Tab({ Title = "Main", Icon = "home" })
+
+-- Auto Toggle
+local StatusParagraph
+local AutoToggle = TabMain:Toggle({
+    Title    = "Aktifkan Auto",
+    Icon     = "zap",
+    Desc     = "Aktifkan mode auto play",
+    Value    = Config.autoEnabled,
+    Callback = function(val)
+        Config.autoEnabled = val
+        WindUI:Notify({
+            Icon     = "bell",
+            Title    = "[ZAP] AUTO",
+            Content  = val and "Auto ON - Safety Anti Detek (KBBI)" or "Auto OFF",
+            Duration = 3,
+        })
+        saveConfig()
+    end,
+})
+
+-- Wordlist Dropdown
+local WordlistDropdown = TabMain:Dropdown({
+    Title    = "Opsi Wordlist",
+    Icon     = "database",
+    Desc     = "Pilih kamus kata",
+    Multi    = false,
+    Value    = Config.activeWordlist,
+    Values   = {
+        "Safety Anti Detek (KBBI)",
+        "Ranking Kata (Kompetitif)",
+    },
+    Callback = function(val)
+        Config.activeWordlist = val
+        WindUI:Notify({
+            Icon     = "bell",
+            Title    = "[PKG] WORDLIST",
+            Content  = "Loading " .. val .. "...",
+            Duration = 3,
+        })
+        task.spawn(function()
+            -- Load wordlist sesuai pilihan
+            local url
+            if val == "Safety Anti Detek (KBBI)" then
+                url = "https://raw.githubusercontent.com/danzzy1we/roblox-script-dump/refs/heads/main/WordListDump/KBBI_Final_Working.lua"
+            elseif val == "Ranking Kata (Kompetitif)" then
+                url = "https://raw.githubusercontent.com/danzzy1we/roblox-script-dump/refs/heads/main/WordListDump/KBBI_Final_Working.lua"
+                -- ganti URL jika ada wordlist kompetitif terpisah
+            end
+            if url then
+                local ok, result = pcall(function()
+                    return loadstring(game:HttpGet(url))()
+                end)
+                if ok and result and result["words"] then
+                    activeWords = result["words"]
+                    print("[AutoKata] Wordlist loaded: " .. val .. " (" .. #activeWords .. " kata)")
+                end
+            end
+        end)
+        saveConfig()
+    end,
+})
+
+-- Aggression Slider
+local AggressionSlider = TabMain:Slider({
+    Title    = "Aggression",
+    Icon     = "trending-up",
+    Desc     = "Agresivitas pemilihan kata",
+    Value    = { Min = 0, Max = 100, Default = Config.aggression, Decimals = 0, Suffix = "%" },
+    Callback = function(val)
+        Config.aggression = val
+    end,
+})
+
+-- Compe Mode
+local CompeModeToggle = TabMain:Toggle({
+    Title    = "Compe Mode",
+    Icon     = "trophy",
+    Desc     = "Filter kata berakhiran jebakan (i,f,x,v,y,w) | Hanya aktif di Ranking Kata",
+    Value    = Config.compeMode,
+    Callback = function(val)
+        Config.compeMode = val
+    end,
+})
+CompeModeToggle:Lock()  -- terkunci, hanya aktif di Ranking Kata
+
+-- Detik Mode
+local DetikModeToggle = TabMain:Toggle({
+    Title    = "Detik Mode",
+    Icon     = "clock",
+    Desc     = "ON=input manual | OFF=preset speed",
+    Value    = false,
+    Callback = function(val)
+        if val then
+            MinDelayInput:Unlock()
+            MaxDelayInput:Unlock()
+            SpeedDropdown:Lock()
+        else
+            MinDelayInput:Lock()
+            MaxDelayInput:Lock()
+            SpeedDropdown:Unlock()
+        end
+    end,
+})
+
+-- Min Delay Input
+local MinDelayInput = TabMain:Input({
+    Title       = "Min Delay (detik)",
+    Icon        = "timer",
+    Desc        = "Delay min (maks 5,0)",
+    Placeholder = "0,5",
+    Callback    = function(val)
+        local num = tonumber((val:gsub(",", ".")))
+        if num then
+            Config.minDelay = math.clamp(num, 0, 5)
+        end
+    end,
+})
+MinDelayInput:Lock()
+
+-- Max Delay Input
+local MaxDelayInput = TabMain:Input({
+    Title       = "Max Delay (detik)",
+    Icon        = "timer",
+    Desc        = "Delay max (maks 5,0)",
+    Placeholder = "1,5",
+    Callback    = function(val)
+        local num = tonumber((val:gsub(",", ".")))
+        if num then
+            Config.maxDelay = math.clamp(num, 0, 5)
+        end
+    end,
+})
+MaxDelayInput:Lock()
+
+-- Kecepatan Preset
+local SpeedDropdown = TabMain:Dropdown({
+    Title    = "Kecepatan",
+    Icon     = "gauge",
+    Desc     = "Preset kecepatan",
+    Multi    = false,
+    Value    = Config.speed,
+    Values   = { "Slow", "Fast", "Superfast" },
+    Callback = function(val)
+        Config.speed = val
+        applySpeedPreset(val)
+    end,
+})
+
+-- Jeda Awal
+local JedaAwalInput = TabMain:Input({
+    Title       = "Jeda Awal (detik)",
+    Icon        = "hourglass",
+    Desc        = "Jeda sebelum mulai ngetik (maks 3,0)",
+    Placeholder = "1,5",
+    Callback    = function(val)
+        local num = tonumber((val:gsub(",", ".")))
+        if num then
+            Config.initialDelay = math.clamp(num, 0, 3)
+        end
+    end,
+})
+
+-- Jeda Submit
+local JedaSubmitInput = TabMain:Input({
+    Title       = "Jeda Submit (detik)",
+    Icon        = "timer",
+    Desc        = "Jeda sebelum submit (maks 5,0)",
+    Placeholder = "1,0",
+    Callback    = function(val)
+        local num = tonumber((val:gsub(",", ".")))
+        if num then
+            Config.submitDelay = math.clamp(num, 0, 5)
+        end
+    end,
+})
+
+-- Min Word Length
+local MinLenSlider = TabMain:Slider({
+    Title    = "Min Word Length",
+    Icon     = "type",
+    Desc     = "Panjang kata minimum",
+    Value    = { Min = 2, Max = 20, Default = Config.minLength, Decimals = 0 },
+    Callback = function(val)
+        Config.minLength = val
+    end,
+})
+
+-- Max Word Length
+local MaxLenSlider = TabMain:Slider({
+    Title    = "Max Word Length",
+    Icon     = "type",
+    Desc     = "Panjang kata maksimum",
+    Value    = { Min = 5, Max = 20, Default = Config.maxLength, Decimals = 0 },
+    Callback = function(val)
+        Config.maxLength = val
+    end,
+})
+
+-- Status Paragraph
+StatusParagraph = TabMain:Paragraph({
+    Title = "Status",
+    Desc  = "Menunggu...",
+})
+
+-- ============================================================
+-- TAB: SELECT WORD
+-- ============================================================
+local TabSelect = Window:Tab({ Title = "Select Word", Icon = "search" })
+
+local WordDropdown
+
+local GetWordsToggle = TabSelect:Toggle({
+    Title    = "Get Words",
+    Icon     = "book-open",
+    Desc     = "Tampilkan daftar kata tersedia",
+    Value    = false,
+    Callback = function(val)
+        if not val then return end
+        -- populate dropdown dengan activeWords
+        local list = {}
+        local maxW = 50
+        for i, w in ipairs(activeWords) do
+            if i > maxW then break end
+            table.insert(list, w)
+        end
+        WordDropdown:SetValues(list)
+    end,
+})
+
+local MaxWordsSlider = TabSelect:Slider({
+    Title    = "Max Words",
+    Icon     = "hash",
+    Value    = { Min = 1, Max = 100, Default = 50, Decimals = 0 },
+    Callback = function(val)
+        -- update batas saat Get Words di-toggle ulang
+    end,
+})
+
+WordDropdown = TabSelect:Dropdown({
+    Title    = "Pilih Kata",
+    Icon     = "chevrons-up-down",
+    Desc     = "Kata untuk diketik",
+    Multi    = false,
+    Values   = {},
+    Callback = function(val)
+        selectedWord = val
+    end,
+})
+
+local TypeSelectedButton = TabSelect:Button({
+    Title    = "Ketik Kata Terpilih",
+    Icon     = "send",
+    Desc     = "Ketik ke game",
+    Callback = function()
+        if not selectedWord then
+            WindUI:Notify({ Icon="bell", Title="Info", Content="Belum ada kata dipilih!", Duration=2 })
+            return
+        end
+        task.spawn(function()
+            if Config.initialDelay > 0 then
+                task.wait(Config.initialDelay)
+            end
+            typeWord(selectedWord)
+            task.wait(Config.submitDelay)
+            SubmitWord:FireServer(selectedWord)
+            print("[AutoKata] Submitted: " .. selectedWord)
+        end)
+    end,
+})
+
+-- ============================================================
+-- TAB: PLAYER
+-- ============================================================
+local TabPlayer = Window:Tab({ Title = "Player", Icon = "user" })
+
+TabPlayer:Paragraph({
+    Title = "Save & Load Config",
+    Desc  = "Simpan semua setting ke satu file.\nSaat script dijalankan, config otomatis di-load.",
+})
+
+local ConfigStatusParagraph = TabPlayer:Paragraph({
+    Title = "Config Tersimpan",
+    Desc  = CAN_SAVE and "(siap)" or "(tidak bisa save - executor tidak support)",
+})
+
+TabPlayer:Button({
+    Title    = "💾 Save Config",
+    Icon     = "save",
+    Desc     = "Simpan semua setting sekarang",
+    Callback = function()
+        saveConfig()
+        ConfigStatusParagraph:SetDesc("Config tersimpan ✅")
+        WindUI:Notify({ Icon="save", Title="Config", Content="Config berhasil disimpan!", Duration=3 })
+    end,
+})
+
+TabPlayer:Button({
+    Title    = "📂 Load Config",
+    Icon     = "folder-open",
+    Desc     = "Muat config dan terapkan ke UI",
+    Callback = function()
+        loadConfig()
+        WindUI:Notify({ Icon="folder-open", Title="Config", Content="Config berhasil dimuat!", Duration=3 })
+    end,
+})
+
+TabPlayer:Button({
+    Title    = "🗑️ Reset Config",
+    Icon     = "trash-2",
+    Desc     = "Hapus file config (kembali default)",
+    Callback = function()
+        resetConfig()
+        ConfigStatusParagraph:SetDesc("Config direset ✅")
+        WindUI:Notify({ Icon="trash-2", Title="Config", Content="Config direset ke default.", Duration=3 })
+    end,
+})
+
+TabPlayer:Paragraph({
+    Title = "Auto Click",
+    Desc  = "Klik otomatis di background setelah match selesai",
+})
+
+local AutoClickToggle = TabPlayer:Toggle({
+    Title    = "Auto Click (Backend)",
+    Icon     = "mouse-pointer",
+    Desc     = "Klik tombol otomatis saat match selesai",
+    Value    = Config.autoClick,
+    Callback = function(val)
+        Config.autoClick = val
+    end,
+})
+
+local AutoClickDelaySlider = TabPlayer:Slider({
+    Title    = "Delay Auto Click",
+    Icon     = "timer",
+    Desc     = "Jeda sebelum klik otomatis",
+    Value    = { Min = 0, Max = 5, Default = Config.autoClickDelay, Decimals = 1, Suffix = "s" },
+    Callback = function(val)
+        Config.autoClickDelay = val
+    end,
+})
+
+-- ============================================================
+-- TAB: SETTINGS
+-- ============================================================
+local TabSettings = Window:Tab({ Title = "Settings", Icon = "settings" })
+
+local AutoJoinDropdown = TabSettings:Dropdown({
+    Title    = "Auto Join Mode",
+    Icon     = "users",
+    Desc     = "Pilih tipe meja yang dimonitor. OFF untuk nonaktif.",
+    Multi    = false,
+    Value    = Config.autoJoinMode,
+    Values   = { "off", "2P", "4P", "8P" },
+    Callback = function(val)
+        Config.autoJoinMode = val
+    end,
+})
+
+local ThemeDropdown = TabSettings:Dropdown({
+    Title    = "Tema",
+    Icon     = "palette",
+    Desc     = "Pilih warna GUI",
+    Multi    = false,
+    Value    = Config.theme,
+    Values   = { "Dark", "Rose", "Midnight" },
+    Callback = function(val)
+        Config.theme = val
+        Window:SetTheme(val)
+    end,
+})
+
+TabSettings:Paragraph({
+    Title = "Anti Lag",
+    Desc  = "Turunkan grafis untuk FPS stabil",
+})
+
+-- Simpan nilai asli Lighting
+local origShadows    = Lighting.GlobalShadows
+local origFogEnd     = Lighting.FogEnd
+local origBrightness = Lighting.Brightness
+
+local PotatoModeToggle = TabSettings:Toggle({
+    Title    = "Potato Mode",
+    Icon     = "cpu",
+    Desc     = "Grafis minimum",
+    Value    = false,
+    Callback = function(val)
+        if val then
+            Lighting.GlobalShadows = false
+            Lighting.FogEnd        = 100000
+            Lighting.Brightness    = 0
+        else
+            Lighting.GlobalShadows = origShadows
+            Lighting.FogEnd        = origFogEnd
+            Lighting.Brightness    = origBrightness
+        end
+    end,
+})
+
+TabSettings:Paragraph({ Title = "Server" })
+
+TabSettings:Button({
+    Title    = "Rejoin",
+    Icon     = "refresh-cw",
+    Desc     = "Masuk ulang ke server sama",
+    Callback = function()
+        TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, LocalPlayer)
+    end,
+})
+
+TabSettings:Paragraph({
+    Title = "Job ID",
+    Desc  = tostring(game.JobId),
+})
+
+TabSettings:Button({
+    Title    = "Copy Job ID",
+    Icon     = "copy",
+    Callback = function()
+        setclipboard(tostring(game.JobId))
+        WindUI:Notify({ Icon="copy", Title="Job ID", Content="Job ID disalin!", Duration=2 })
+    end,
+})
+
+-- Toggle UI Keybind
+Window:SetToggleKey(Enum.KeyCode.X)
+TabSettings:Keybind({
+    Title    = "Toggle UI Keybind",
+    Value    = "X",
+    Callback = function(key)
+        Window:SetToggleKey(Enum.KeyCode[key] or Enum.KeyCode.X)
+    end,
+})
+
+-- ============================================================
+-- TAB: ABOUT
+-- ============================================================
+local TabAbout = Window:Tab({ Title = "About", Icon = "info" })
+
+TabAbout:Paragraph({
+    Title = "Auto Kata v5.5",
+    Desc  = "by dhann x sazaraaax\nAuto play, compe mode, ranking kata, save config, auto click backend, Discord notif",
+})
+
+TabAbout:Paragraph({
+    Title = "Cara Pakai",
+    Desc  = "1. Pilih wordlist di Main\n2. Aktifkan Auto\n3. Compe Mode (Ranking only)\n4. Atur delay & aggression\n5. Pilih Auto Join mode di Settings\n6. Simpan config di Player",
+})
+
+TabAbout:Button({
+    Title    = "Copy Discord Invite",
+    Icon     = "link",
+    Callback = function()
+        setclipboard("https://discord.gg/dhann")
+        WindUI:Notify({ Icon="link", Title="Discord", Content="Link Discord disalin!", Duration=2 })
+    end,
+})
+
+TabAbout:Button({
+    Title    = "Copy WhatsApp Channel",
+    Icon     = "link",
+    Callback = function()
+        setclipboard("https://whatsapp.com/channel/dhann")
+        WindUI:Notify({ Icon="link", Title="WhatsApp", Content="Link WA disalin!", Duration=2 })
+    end,
+})
+
+-- ============================================================
+-- SEND LOGIN NOTIF (ke Discord webhook jika ada)
+-- ============================================================
+local playerName   = tostring(LocalPlayer.Name)
+local playerUserId = tostring(LocalPlayer.UserId)
+local gameName     = pcall(function() return MarketplaceService:GetProductInfo(game.PlaceId)["Name"] end) and MarketplaceService:GetProductInfo(game.PlaceId)["Name"] or tostring(game.PlaceId)
+
+local loginMsg = "✅ **DhanxSaza Hub**  - LOGIN"
+    .. "\nUser: `" .. playerName:sub(1, 4) .. "***`"
+    .. "\nUser ID: `" .. playerUserId:sub(1, 3) .. "***`"
+    .. "\nGame: `" .. tostring(game.PlaceId) .. "`"
+    .. "\nDhanxSaza Hub"
+
+task.spawn(function()
+    -- Discord webhook send sudah dihandle oleh _runner external
+    print("[AutoKata] Login: " .. loginMsg)
+end)
+
+-- ============================================================
+-- REMOTE EVENT LISTENERS
+-- ============================================================
+local currentStartChar = nil
+
+-- Update start char saat MatchUI event
+Remotes:WaitForChild("MatchUI").OnClientEvent:Connect(function(data)
+    if type(data) == "table" then
+        currentStartChar = data.startChar or data[1] or nil
+    end
+    if StatusParagraph then
+        StatusParagraph:SetDesc("Match aktif | Mulai dari: " .. tostring(currentStartChar))
+    end
+end)
+
+-- Billboard Update
+Remotes:WaitForChild("BillboardUpdate").OnClientEvent:Connect(function(info)
+    -- update billboard jika diperlukan
+end)
+
+-- Kata sudah dipakai
+Remotes:WaitForChild("UsedWordWarn").OnClientEvent:Connect(function(word)
+    WindUI:Notify({
+        Icon     = "alert-triangle",
+        Title    = "Kata Sudah Dipakai",
+        Content  = "\"" .. tostring(word) .. "\" sudah pernah dipakai!",
+        Duration = 2,
+    })
+end)
+
+-- Player join/leave meja
+Remotes:WaitForChild("JoinTable").OnClientEvent:Connect(function(player, tableId)
+    print("[AutoKata] Join: " .. tostring(player) .. " -> Table " .. tostring(tableId))
+end)
+
+Remotes:WaitForChild("LeaveTable").OnClientEvent:Connect(function(player)
+    print("[AutoKata] Leave: " .. tostring(player))
+end)
+
+-- Player kena hit
+Remotes:WaitForChild("PlayerHit", 3).OnClientEvent:Connect(function(player, word)
+    print("[AutoKata] Hit: " .. tostring(player) .. " -> " .. tostring(word))
+end)
+
+-- Player benar
+Remotes:WaitForChild("PlayerCorrect", 3).OnClientEvent:Connect(function(player, word)
+    print("[AutoKata] Correct: " .. tostring(player) .. " -> " .. tostring(word))
+end)
+
+-- ============================================================
+-- AUTO LOOP UTAMA
+-- ============================================================
+task.spawn(function()
+    while true do
+        task.wait(0.5)
+        if not Config.autoEnabled then continue end
+        if not currentStartChar then continue end
+
+        local word = findWord(currentStartChar, activeWords, Config)
+        if not word then
+            if StatusParagraph then
+                StatusParagraph:SetDesc("❌ Tidak ada kata untuk huruf: " .. tostring(currentStartChar))
+            end
+            continue
+        end
+
+        if StatusParagraph then
+            StatusParagraph:SetDesc("⌨️ Mengetik: " .. word)
+        end
+        print("[AutoKata] Auto type: " .. word)
+
+        -- Jeda awal
+        if Config.initialDelay > 0 then
+            task.wait(Config.initialDelay)
+        end
+
+        -- Ketik karakter per karakter
+        typeWord(word)
+
+        -- Jeda sebelum submit
+        task.wait(Config.submitDelay)
+
+        -- Submit
+        local ok, err = pcall(function()
+            SubmitWord:FireServer(word)
+        end)
+        if not ok then
+            print("[AutoKata] Submit error: " .. tostring(err))
+        end
+
+        -- Random delay antar giliran
+        local delay = Config.minDelay + math.random() * (Config.maxDelay - Config.minDelay)
+        task.wait(delay)
+
+        -- Reset agar tidak ngetik terus sebelum giliran berikutnya
+        currentStartChar = nil
+        if StatusParagraph then
+            StatusParagraph:SetDesc("✅ Menunggu giliran berikutnya...")
+        end
+    end
+end)
+
+-- ============================================================
+-- AUTO JOIN LOOP
+-- ============================================================
+task.spawn(function()
+    while true do
+        task.wait(3)
+        if Config.autoJoinMode == "off" then continue end
+        -- Logic auto join berdasarkan tipe meja (2P/4P/8P)
+        -- Implementasi tergantung remote API game
+    end
+end)
+
+-- ============================================================
+-- AUTO CLICK BACKEND LOOP
+-- ============================================================
+task.spawn(function()
+    while true do
+        task.wait(2)
+        if not Config.autoClick then continue end
+        -- Klik tombol "Main Lagi" / "Ready" setelah match selesai
+        -- Implementasi tergantung struktur GUI game
+    end
+end)
+
+-- ============================================================
+-- STATUS BAR: Update config info
+-- ============================================================
+task.spawn(function()
+    while true do
+        task.wait(5)
+        if ConfigStatusParagraph then
+            local info = "Wordlist    : " .. Config.activeWordlist
+                .. "\nDelay       : " .. Config.minDelay .. "s – " .. Config.maxDelay .. "s"
+                .. "\nAggression  : " .. Config.aggression .. "%"
+                .. "\nJeda Awal   : " .. Config.initialDelay .. "s"
+                .. "\nJeda Submit : " .. Config.submitDelay .. "s"
+                .. "\nAuto        : " .. (Config.autoEnabled and "ON" or "OFF")
+                .. "\nAutoClick   : " .. (Config.autoClick and "ON" or "OFF")
+                .. "\nCompeMode   : " .. (Config.compeMode and "ON" or "OFF")
+                .. "\nAutoJoin    : " .. Config.autoJoinMode
+            ConfigStatusParagraph:SetDesc(info)
+        end
+    end
+end)
+
+print("[AutoKata] ✅ Script loaded! | Wordlist:" .. Config.activeWordlist .. " | autoEnabled=" .. tostring(Config.autoEnabled))
